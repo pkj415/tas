@@ -594,7 +594,7 @@ static inline void queue_activate_timewheel(struct qman_thread *t,
    *  - not more than if it just sent max_chunk at the current rate
    */
   ts = q->next_ts;
-  uint32_t fired_ts = ts;
+  //uint32_t fired_ts = ts;
   max_ts = queue_new_ts(t, q, q->max_chunk);
 
   if (timestamp_lessthaneq(t, ts, t->ts_virtual)) {
@@ -605,7 +605,7 @@ static inline void queue_activate_timewheel(struct qman_thread *t,
 
   int64_t diff = rel_time(t->ts_virtual, q->next_ts);
   if (UNLIKELY(diff < 0)) {
-    TAS_LOG(ERR, FAST_QMAN, "queue_activate_timewheel: fired_ts=%u ts_virtual=%u max_ts=%u rate=%u\n", fired_ts, t->ts_virtual, max_ts, q->rate);
+    //TAS_LOG(ERR, FAST_QMAN, "diff < 0 queue_activate_timewheel: fired_ts=%u ts_virtual=%u max_ts=%u rate=%u\n", fired_ts, t->ts_virtual, max_ts, q->rate);
     diff = timewheel_max_time;
   }
 
@@ -631,17 +631,28 @@ static inline unsigned poll_timewheel(struct qman_thread *t, uint32_t cur_ts,
   unsigned cnt;
   uint32_t idx, cur_vts;
   struct queue *q;
+  static uint32_t flag = 0;
+
+  if (UNLIKELY(flag == 0)) {
+    t->ts_real = cur_ts;
+    flag = 1;
+  }
+
+  //TAS_LOG(ERR, FAST_QMAN, "ts_real=%u cur_ts=%u rel_time=%u debt=%u\n", t->ts_real, cur_ts, rel_time(t->ts_real, cur_ts), t->timewheel_debt_ns);
 
   /* maximum virtual time stamp that can be reached */
   t->timewheel_debt_ns += rel_time(t->ts_real, cur_ts);
-  if (t->timewheel_debt_ns >= UINT32_MAX)
+  if (t->timewheel_debt_ns >= UINT32_MAX) {
+    //TAS_LOG(ERR, FAST_QMAN, "Updating debt to UINT32_MAX=%u\n", UINT32_MAX);
     t->timewheel_debt_ns = UINT32_MAX;
+  }
 
   cur_vts = t->ts_virtual;
   idx = t->timewheel_head_idx;
 
   for (cnt = 0; cnt < num;) {
-    if (t->timewheel_debt_ns == 0)
+    //TAS_LOG(ERR, FAST_QMAN, "debt=%lu\n", t->timewheel_debt_ns);
+    if (t->timewheel_debt_ns < t->timewheel_granularity_ns)
     {
       TAS_LOG(ERR, FAST_QMAN, "timewheel_debt_ns=%u!\n", t->timewheel_debt_ns);
       break;
@@ -686,10 +697,8 @@ static inline unsigned poll_timewheel(struct qman_thread *t, uint32_t cur_ts,
     }
 
     cur_vts += t->timewheel_granularity_ns;
-    if (t->timewheel_debt_ns < t->timewheel_granularity_ns)
-      t->timewheel_granularity_ns = 0;
-    else
-      t->timewheel_debt_ns -= t->timewheel_granularity_ns;
+    //TAS_LOG(ERR, FAST_QMAN, "timewheel_debt_ns=%lu timewheel_granularity_ns=%u\n", t->timewheel_debt_ns, t->timewheel_granularity_ns);
+    t->timewheel_debt_ns -= t->timewheel_granularity_ns;
 
     idx++;
     if (idx >= t->timewheel_len)
