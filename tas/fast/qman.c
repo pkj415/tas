@@ -164,26 +164,27 @@ int qman_thread_init(struct dataplane_context *ctx)
     t->timewheel_count = 0;
     t->timewheel_len = num_elements;
     t->timewheel_head_idx = 0;
+    t->timewheel_debt_ns = 0;
 
     if (t->timewheel_len * t->timewheel_granularity_ns >= UINT32_MAX/2) {
       t->timewheel_len = (UINT32_MAX/2)/t->timewheel_granularity_ns;
     }
 
-    if ((t->timewheel = calloc(1, sizeof(struct queue*) * num_elements))
+    if ((t->timewheel = calloc(1, sizeof(struct queue*) * t->timewheel_len))
       == NULL)
     {
       TAS_LOG(ERR, FAST_QMAN, "%s(): timewheel malloc failed\n", __func__);
       return -1;
     }
 
-    struct list_node* bucket_heads = calloc(1, sizeof(struct list_node) * num_elements);
+    struct list_node* bucket_heads = calloc(1, sizeof(struct list_node) * t->timewheel_len);
     if (bucket_heads == NULL)
     {
       TAS_LOG(ERR, FAST_QMAN, "%s(): timewheel malloc failed\n", __func__);
       return -1;
     }
 
-    for (unsigned i = 0; i < num_elements; i++)
+    for (unsigned i = 0; i < t->timewheel_len; i++)
     {
       t->timewheel[i] = LIST_TO_QUEUE(&bucket_heads[i]);
       QUEUE_TO_LIST(t->timewheel[i])->next = QUEUE_TO_LIST(t->timewheel[i]);
