@@ -164,7 +164,6 @@ int qman_thread_init(struct dataplane_context *ctx)
     t->timewheel_count = 0;
     t->timewheel_len = num_elements;
     t->timewheel_head_idx = 0;
-    t->timewheel_debt_ns = 0;
 
     if (t->timewheel_len * t->timewheel_granularity_ns >= UINT32_MAX/2) {
       t->timewheel_len = (UINT32_MAX/2)/t->timewheel_granularity_ns;
@@ -624,7 +623,6 @@ static inline unsigned poll_timewheel(struct qman_thread *t, uint32_t cur_ts,
   for (cnt = 0; cnt < num;) {
     if (!timestamp_lessthaneq(t, cur_vts, max_vts))
     {
-      TAS_LOG(INFO, FAST_QMAN, "timewheel_debt_ns=%u!\n", t->timewheel_debt_ns);
       break;
     }
 
