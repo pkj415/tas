@@ -857,8 +857,8 @@ static void listener_packet(struct listener *l, const struct pkt_tcp *p,
   struct pkt_tcp *bl_p;
 
   if ((TCPH_FLAGS(&p->tcp) & ~(TCP_ECE | TCP_CWR)) != TCP_SYN) {
-    fprintf(stderr, "listener_packet: Not a SYN (flags %x)\n",
-            TCPH_FLAGS(&p->tcp));
+    //fprintf(stderr, "listener_packet: Not a SYN (flags %x)\n",
+    //        TCPH_FLAGS(&p->tcp));
     send_reset(p, opts);
     return;
   }
