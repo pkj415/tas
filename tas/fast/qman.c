@@ -322,7 +322,7 @@ static void inline set_impl(struct qman_thread *t, uint32_t idx, uint32_t rate,
   int new_avail = 0;
 
   if ((flags & QMAN_SET_RATE) != 0) {
-    q->rate = rate; //2117394; //rate;
+    q->rate = rate;
   }
 
   if ((flags & QMAN_SET_MAXCHUNK) != 0) {
@@ -543,15 +543,6 @@ static inline uint8_t queue_level(struct qman_thread *t)
 
 /*****************************************************************************/
 /* Managing timewheel queues */
-
-static inline uint32_t timestamp_roundup(uint32_t timestamp, uint32_t granularity)
-{
-  // Two reasons to increment by granularity -
-  // Without it we would be rounding down and giving a slightly higher rate than intended. By rounding up we are
-  // giving a slightly lower rate than intended, with the added advantage that re-activating a queue while performing
-  // poll_timewheel will not add it to the current timewheel head index. 
-  return (timestamp - (timestamp % granularity)) + granularity;
-}
 
 static inline void queue_activate_timewheel(struct qman_thread *t,
     struct queue *q, uint32_t q_idx)
