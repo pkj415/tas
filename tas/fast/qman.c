@@ -565,7 +565,7 @@ static inline void queue_activate_timewheel(struct qman_thread *t,
    *  - not more than if it just sent max_chunk at the current rate
    */
   ts = q->next_ts;
-  uint32_t fired_ts = ts;
+  //uint32_t fired_ts = ts;
   max_ts = queue_new_ts(t, q, q->max_chunk);
 
   if (timestamp_lessthaneq(t, ts, t->ts_virtual)) {
@@ -590,7 +590,10 @@ static inline void queue_activate_timewheel(struct qman_thread *t,
     pos -= t->timewheel_len;
 
   if (pos >= t->timewheel_len)
-    pos = t->timewheel_len - 1;
+    pos = t->timewheel_head_idx + 1;
+
+  if (pos >= t->timewheel_len)
+    pos -= t->timewheel_len;
 
   //assert(pos < t->timewheel_len);
 
