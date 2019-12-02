@@ -601,7 +601,7 @@ static inline void queue_activate_timewheel(struct qman_thread *t,
   int64_t diff = rel_time(t->ts_virtual, q->next_ts);
 
   assert(diff >= 0);
-  assert(diff < timewheel_max_time);
+  assert(diff <= timewheel_max_time);
 
   uint64_t pos = diff / (t->timewheel_granularity_ns);
 
