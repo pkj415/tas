@@ -15,9 +15,9 @@
 #define STATS_ATOMIC_ADD(c, f, n) __sync_fetch_and_add(&c->stats.stat_##f, n)
 #define STATS_ADD(c, f, n) (c->stats.stat_##f += n)
 
-#define STATS_ATOMIC_FETCHRESET(c, f) (__sync_lock_test_and_set(&c->stats.stat_##f, 0))
-#define STATS_ATOMIC_FETCH(c, f) STATS_ATOMIC_ADD(c, f, 0)
-#define STATS_FETCH(c, f) (c->stats.stat_##f)
+#define STATS_ATOMIC_FETCHRESET(c, f) (__sync_lock_test_and_set(&(c)->stats.stat_##f, 0))
+#define STATS_ATOMIC_FETCH(c, f) STATS_ATOMIC_ADD((c), f, 0)
+#define STATS_FETCH(c, f) ((c)->stats.stat_##f)
 
 #else
 
@@ -83,6 +83,12 @@ struct dataplane_stats
 #endif
 
 #endif
+};
+
+struct timewheel_stats {
+  uint64_t stat_timewheel_delta_high;
+  uint64_t stat_act_timewheel_cnt;
+  uint64_t stat_queue_new_ts_wrap_cnt;
 };
 
 struct controlplane_stats

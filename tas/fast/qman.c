@@ -402,7 +402,31 @@ static inline unsigned poll_nolimit(struct qman_thread *t, uint32_t cur_ts,
 static inline uint32_t queue_new_ts(struct qman_thread *t, struct queue *q,
     uint32_t bytes)
 {
+  uint64_t delta = ((uint64_t) bytes * 8 * 1000000) / q->rate;
+
+  if (delta >= UINT32_MAX/2) {
+    STATS_ADD(t, queue_new_ts_wrap_cnt, 1);
+  }
   return t->ts_virtual + ((uint64_t) bytes * 8 * 1000000) / q->rate;
+}
+
+static inline uint32_t queue_new_ts_timewheel(struct qman_thread *t, struct queue *q,
+    uint32_t bytes)
+{
+  static uint64_t timewheel_max_time = 0;
+  if (UNLIKELY(timewheel_max_time == 0))
+  {
+    timewheel_max_time = ((t->timewheel_len - 1) * t->timewheel_granularity_ns);
+  }
+
+  uint64_t delta = ((uint64_t) bytes * 8 * 1000000) / q->rate;
+
+  if (delta > timewheel_max_time) {
+    STATS_ADD(t, timewheel_delta_high, 1);
+    delta = timewheel_max_time;
+  }
+
+  return t->ts_virtual + delta;
 }
 
 /** Add queue to the skip list list */
@@ -566,7 +590,7 @@ static inline void queue_activate_timewheel(struct qman_thread *t,
    */
   ts = q->next_ts;
   //uint32_t fired_ts = ts;
-  max_ts = queue_new_ts(t, q, q->max_chunk);
+  max_ts = queue_new_ts_timewheel(t, q, q->max_chunk);
 
   if (timestamp_lessthaneq(t, ts, t->ts_virtual)) {
     ts = q->next_ts = t->ts_virtual;
@@ -575,27 +599,21 @@ static inline void queue_activate_timewheel(struct qman_thread *t,
   }
 
   int64_t diff = rel_time(t->ts_virtual, q->next_ts);
-  if (UNLIKELY(diff < 0)) {
-    //TAS_LOG(ERR, FAST_QMAN, "queue_activate_timewheel: fired_ts=%u ts_virtual=%u max_ts=%u rate=%u\n", fired_ts, t->ts_virtual, max_ts, q->rate);
-    diff = timewheel_max_time;
-  }
+
+  assert(diff >= 0);
+  assert(diff < timewheel_max_time);
 
   uint64_t pos = diff / (t->timewheel_granularity_ns);
 
   if (pos==0)
     pos++;
 
+  STATS_ADD(t, act_timewheel_cnt, 1);
   pos = (t->timewheel_head_idx + pos);
   if (pos >= t->timewheel_len)
     pos -= t->timewheel_len;
 
-  if (pos >= t->timewheel_len)
-    pos = t->timewheel_head_idx + 1;
-
-  if (pos >= t->timewheel_len)
-    pos -= t->timewheel_len;
-
-  //assert(pos < t->timewheel_len);
+  assert(pos < t->timewheel_len);
 
   //TAS_LOG(ERR, FAST_QMAN, "queue_activate_timewheel: q=%p fired_ts=%u head_idx=%u pos=%u ts_virtual=%u next_ts=%u rel_time=%u\n", q, fired_ts, t->timewheel_head_idx, pos, t->ts_virtual, q->next_ts, rel_time(t->ts_virtual, q->next_ts));
   list_add_tail(QUEUE_TO_LIST(t->timewheel[pos]), QUEUE_TO_LIST(q));
@@ -695,7 +713,12 @@ static inline void queue_fire(struct qman_thread *t,
   q->avail -= bytes;
 
   if (q->rate > 0) {
-    q->next_ts = queue_new_ts(t, q, bytes);
+    if (config.scheduler == CONFIG_PS_CAROUSEL) {
+      q->next_ts = queue_new_ts_timewheel(t, q, bytes);
+    }
+    else {
+      q->next_ts = queue_new_ts(t, q, bytes);
+    }
   }
 
   //TAS_LOG(ERR, FAST_QMAN, "queue_fire: q=%p q_idx=%u rate=%u virtual_ts=%u next_ts=%u avail=%u\n", q, idx, q->rate, t->ts_virtual, q->next_ts, q->avail);

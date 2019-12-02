@@ -270,6 +270,10 @@ void dataplane_dump_stats(void)
     uint64_t sp_empty  = STATS_ATOMIC_FETCH(ctx, sp_empty);
     uint64_t tx_empty  = STATS_ATOMIC_FETCH(ctx, tx_empty);
 
+    uint64_t act_timewheel_cnt = STATS_FETCH(&(ctx->qman), act_timewheel_cnt);
+    uint64_t queue_new_ts_wrap_cnt = STATS_FETCH(&(ctx->qman), queue_new_ts_wrap_cnt);
+    uint64_t timewheel_delta_high = STATS_FETCH(&(ctx->qman), timewheel_delta_high);
+
     TAS_LOG(INFO, MAIN, "DP [%u]> (POLL, EMPTY, TOTAL, CYC/POLL, CYC/TOTAL, EMPTY/POLL)\n", i);
     TAS_LOG(INFO, MAIN, "qm       =(%"PRIu64",%"PRIu64",%"PRIu64", %lF, %lF, %lF)\n",
             qm_poll, qm_empty,
@@ -288,6 +292,7 @@ void dataplane_dump_stats(void)
             tx_total, (double) cyc_tx/tx_poll, (double) cyc_tx/tx_total, (double) tx_empty/tx_poll);
     TAS_LOG(INFO, MAIN, "cyc       =(\n\t\t\t\t\t\tcyc_qm = %"PRIu64",\n\t\t\t\t\t\tcyc_qm_useful = %"PRIu64",\n\t\t\t\t\t\tcyc_rx = %"PRIu64",\n\t\t\t\t\t\tcyc_qs = %"PRIu64",\n\t\t\t\t\t\tcyc_qs_useful = %"PRIu64",\n\t\t\t\t\t\tcyc_sp = %"PRIu64",\n\t\t\t\t\t\tcyc_tx = %"PRIu64"\n)\n",
             cyc_qm, cyc_qm_useful, cyc_rx, cyc_qs, cyc_qs_useful, cyc_sp, cyc_tx);
+    TAS_LOG(INFO, MAIN, "act_timewheel_cnt=%"PRIu64", queue_new_ts_wrap_cnt=%"PRIu64", timewheel_delta_high=%"PRIu64"\n", act_timewheel_cnt, queue_new_ts_wrap_cnt, timewheel_delta_high);
 
     uint64_t cyc_total = STATS_ATOMIC_FETCH(ctx, cyc_qm) + STATS_ATOMIC_FETCH(ctx, cyc_rx) + STATS_ATOMIC_FETCH(ctx, cyc_qs) + STATS_ATOMIC_FETCH(ctx, cyc_sp) + STATS_ATOMIC_FETCH(ctx, cyc_tx) + 1;
     TAS_LOG(INFO, MAIN, "ratio=(%lf, %lf, %lf, %lf, %lf) \n",

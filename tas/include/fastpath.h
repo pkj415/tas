@@ -66,6 +66,7 @@ struct qman_thread {
   uint32_t ts_virtual;
   struct utils_rng rng;
   bool nolimit_first;
+  struct timewheel_stats stats;
 };
 
 
