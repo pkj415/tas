@@ -252,8 +252,10 @@ uint32_t qman_next_ts(struct qman_thread *t, uint32_t cur_ts)
 int qman_poll(struct qman_thread *t, unsigned num, unsigned *q_ids,
     uint16_t *q_bytes)
 {
+  STATS_TS(qman_poll_start);
   unsigned x, y;
   uint32_t ts = timestamp();
+  static unsigned first_poll_done = 0;
 
   /* poll nolimit list and skiplist alternating the order between */
   if (t->nolimit_first) {
@@ -285,6 +287,13 @@ int qman_poll(struct qman_thread *t, unsigned num, unsigned *q_ids,
   }
   t->nolimit_first = !t->nolimit_first;
 
+  if (UNLIKELY(first_poll_done==0 && (x+y> 0))) {
+    first_poll_done = 1;
+  }
+  if (first_poll_done) {
+    STATS_TS(qman_poll_end);
+    STATS_ADD(t, cyc_qman_poll, qman_poll_end - qman_poll_start);
+  }
   return x + y;
 }
 
@@ -405,9 +414,10 @@ static inline uint32_t queue_new_ts(struct qman_thread *t, struct queue *q,
   uint64_t delta = ((uint64_t) bytes * 8 * 1000000) / q->rate;
 
   if (delta >= UINT32_MAX/2) {
+    delta = UINT32_MAX/2 - 1;
     STATS_ADD(t, queue_new_ts_wrap_cnt, 1);
   }
-  return t->ts_virtual + ((uint64_t) bytes * 8 * 1000000) / q->rate;
+  return t->ts_virtual + delta;
 }
 
 static inline uint32_t queue_new_ts_timewheel(struct qman_thread *t, struct queue *q,
@@ -741,6 +751,7 @@ static inline void queue_fire(struct qman_thread *t,
 static inline void queue_activate(struct qman_thread *t, struct queue *q,
     uint32_t idx)
 {
+  STATS_TS(start);
   if (q->rate == 0) {
     queue_activate_nolimit(t, q, idx);
   } else {
@@ -749,6 +760,8 @@ static inline void queue_activate(struct qman_thread *t, struct queue *q,
     else
       queue_activate_skiplist(t, q, idx);
   }
+  STATS_TS(end);
+  STATS_ADD(t, cyc_queue_activate, end - start);
 }
 
 static inline uint32_t timestamp(void)
