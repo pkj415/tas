@@ -667,8 +667,8 @@ static inline unsigned poll_timewheel(struct qman_thread *t, uint32_t cur_ts,
     {
       q = LIST_TO_QUEUE(bucket->next);
 
-      assert((q->flags & FLAG_INTIMEWHEEL) != 0);
-      assert(q->avail > 0);
+ //     assert((q->flags & FLAG_INTIMEWHEEL) != 0);
+ //     assert(q->avail > 0);
       q->flags &= ~FLAG_INTIMEWHEEL;
 
       uint32_t q_idx = q - t->queues;
