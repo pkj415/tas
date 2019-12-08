@@ -513,8 +513,8 @@ failed:
 static int config_defaults(struct configuration *c, char *progname)
 {
   c->ip = 0;
-  c->nic_rx_len = 16 * 1024;
-  c->nic_tx_len = 16 * 1024;
+  c->nic_rx_len = 3000 * 1024;
+  c->nic_tx_len = 3000 * 1024;
   c->app_kin_len = 1024 * 1024;
   c->app_kout_len = 1024 * 1024;
   c->arp_to = 500;
@@ -546,8 +546,8 @@ static int config_defaults(struct configuration *c, char *progname)
   c->cc_timely_min_rate = 10000;
   //c->scheduler = CONFIG_PS_CAROUSEL;
   c->scheduler = CONFIG_PS_FQ;
-  c->ps_timewheel_resolution_us = 10;
-  c->ps_timewheel_max_us = 1 * 50 * 1000;
+  c->ps_timewheel_resolution_us = 1;
+  c->ps_timewheel_max_us = 500 * 1000;
   c->fp_cores_max = 1;
   c->fp_interrupts = 1;
   c->fp_xsumoffload = 1;
