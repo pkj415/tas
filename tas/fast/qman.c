@@ -290,7 +290,7 @@ int qman_poll(struct qman_thread *t, unsigned num, unsigned *q_ids,
   if (UNLIKELY(first_poll_done==0 && (x+y> 0))) {
     first_poll_done = 1;
   }
-  if (first_poll_done) {
+  if (LIKELY(first_poll_done)) {
     STATS_TS(qman_poll_end);
     STATS_ADD(t, cyc_qman_poll, qman_poll_end - qman_poll_start);
   }
@@ -610,8 +610,8 @@ static inline void queue_activate_timewheel(struct qman_thread *t,
 
   int64_t diff = rel_time(t->ts_virtual, q->next_ts);
 
-  assert(diff >= 0);
-  assert(diff <= timewheel_max_time);
+  //assert(diff >= 0);
+  //assert(diff <= timewheel_max_time);
 
   uint64_t pos = diff / (t->timewheel_granularity_ns);
 
@@ -623,7 +623,7 @@ static inline void queue_activate_timewheel(struct qman_thread *t,
   if (pos >= t->timewheel_len)
     pos -= t->timewheel_len;
 
-  assert(pos < t->timewheel_len);
+  //assert(pos < t->timewheel_len);
 
   //TAS_LOG(ERR, FAST_QMAN, "queue_activate_timewheel: q=%p fired_ts=%u head_idx=%u pos=%u ts_virtual=%u next_ts=%u rel_time=%u\n", q, fired_ts, t->timewheel_head_idx, pos, t->ts_virtual, q->next_ts, rel_time(t->ts_virtual, q->next_ts));
   list_add_tail(QUEUE_TO_LIST(t->timewheel[pos]), QUEUE_TO_LIST(q));

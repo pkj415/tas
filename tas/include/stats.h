@@ -6,7 +6,7 @@
 
 #ifdef PROFILING
 #define DATAPLANE_STATS 1
-#define CONTROLPLANE_STATS 1
+#define CONTROLPLANE_STATS 0
 #endif
 
 #ifdef DATAPLANE_STATS
@@ -89,6 +89,8 @@ struct timewheel_stats {
   uint64_t stat_timewheel_delta_high;
   uint64_t stat_act_timewheel_cnt;
   uint64_t stat_queue_new_ts_wrap_cnt;
+  uint64_t stat_cyc_qman_poll;
+  uint64_t stat_cyc_queue_activate;
 };
 
 struct controlplane_stats
