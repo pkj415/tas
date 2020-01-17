@@ -1,8 +1,8 @@
-Improving Connection Scalability in TAS -
+# Improving Connection Scalability in TAS -
 
 [Link to report](https://drive.google.com/file/d/1m7WcUe_nFjVfJE7XbAvxkYd1Iilics2B/view?usp=sharing)
 
-THe remaining README is from TAS's master branch.
+The remaining README is from TAS's master branch.
 
 # TCP Acceleration Service
 
