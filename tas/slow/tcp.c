@@ -411,7 +411,7 @@ int tcp_close(struct connection *conn)
   int tx_c, rx_c;
 
   if (conn->status != CONN_OPEN) {
-    fprintf(stderr, "tcp_close: currently no support for non-opened conns.\n");
+    //fprintf(stderr, "tcp_close: currently no support for non-opened conns.\n");
     return -1;
   }
 
@@ -857,8 +857,8 @@ static void listener_packet(struct listener *l, const struct pkt_tcp *p,
   struct pkt_tcp *bl_p;
 
   if ((TCPH_FLAGS(&p->tcp) & ~(TCP_ECE | TCP_CWR)) != TCP_SYN) {
-    fprintf(stderr, "listener_packet: Not a SYN (flags %x)\n",
-            TCPH_FLAGS(&p->tcp));
+    //fprintf(stderr, "listener_packet: Not a SYN (flags %x)\n",
+    //        TCPH_FLAGS(&p->tcp));
     send_reset(p, opts);
     return;
   }

@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include <rte_config.h>
@@ -36,6 +37,7 @@
 #include <rte_cycles.h>
 
 #include <utils.h>
+#include <utils_log.h>
 
 #include "internal.h"
 
@@ -43,6 +45,7 @@
 
 #define FLAG_INSKIPLIST 1
 #define FLAG_INNOLIMITL 2
+#define FLAG_INTIMEWHEEL 3
 
 /** Skiplist: bits per level */
 #define SKIPLIST_BITS 3
@@ -53,10 +56,37 @@
 #define TIMESTAMP_BITS 32
 #define TIMESTAMP_MASK 0xFFFFFFFF
 
+/** List node */
+struct list_node {
+  struct list_node* next;
+  struct list_node* prev;
+} __attribute__((packed));
+
+static inline void list_add_tail(struct list_node* head, struct list_node* q)
+{
+  q->next = head;
+  q->prev = head->prev;
+  head->prev->next = q;
+  head->prev = q;
+}
+
+static inline void list_remove(struct list_node* q)
+{
+  struct list_node* n = q->next;
+  struct list_node* p = q->prev;
+
+  p->next = n;
+  n->prev = p;
+}
+
 /** Queue state */
 struct queue {
-  /** Next pointers for levels in skip list */
-  uint32_t next_idxs[QMAN_SKIPLIST_LEVELS];
+  union {
+    /** Links in doubly linked list */
+    struct list_node link;
+    /** Next pointers for levels in skip list */
+    uint32_t next_idxs[QMAN_SKIPLIST_LEVELS];
+  } __attribute__((packed));
   /** Time stamp */
   uint32_t next_ts;
   /** Assigned Rate */
@@ -69,6 +99,9 @@ struct queue {
   uint16_t flags;
 } __attribute__((packed));
 STATIC_ASSERT((sizeof(struct queue) == 32), queue_size);
+
+#define LIST_TO_QUEUE(_lstnode) ((struct queue*) _lstnode)
+#define QUEUE_TO_LIST(_queue)   ((struct list_node*) _queue)
 
 
 /** Actually update queue state: must run on queue's home core */
@@ -87,6 +120,12 @@ static inline void queue_activate_skiplist(struct qman_thread *t,
 static inline unsigned poll_skiplist(struct qman_thread *t, uint32_t cur_ts,
     unsigned num, unsigned *q_ids, uint16_t *q_bytes);
 static inline uint8_t queue_level(struct qman_thread *t);
+
+/** Add queue to timewheel */
+static inline void queue_activate_timewheel(struct qman_thread *t,
+    struct queue *q, uint32_t q_idx);
+static inline unsigned poll_timewheel(struct qman_thread *t, uint32_t cur_ts,
+    unsigned num, unsigned *q_ids, uint16_t *q_bytes);
 
 static inline void queue_fire(struct qman_thread *t,
     struct queue *q, uint32_t idx, unsigned *q_id, uint16_t *q_bytes);
@@ -110,11 +149,49 @@ int qman_thread_init(struct dataplane_context *ctx)
     return -1;
   }
 
-  for (i = 0; i < QMAN_SKIPLIST_LEVELS; i++) {
-    t->head_idx[i] = IDXLIST_INVAL;
+  if (config.scheduler == CONFIG_PS_FQ)
+  {
+    for (i = 0; i < QMAN_SKIPLIST_LEVELS; i++) {
+      t->head_idx[i] = IDXLIST_INVAL;
+    }
+    utils_rng_init(&t->rng, RNG_SEED * ctx->id + ctx->id);
   }
+  else if (config.scheduler == CONFIG_PS_CAROUSEL)
+  {
+    unsigned num_elements = (config.ps_timewheel_max_us/
+                              config.ps_timewheel_resolution_us);
+    t->timewheel_granularity_ns = config.ps_timewheel_resolution_us * 1000ull;
+    t->timewheel_count = 0;
+    t->timewheel_len = num_elements;
+    t->timewheel_head_idx = 0;
+
+    if (t->timewheel_len * t->timewheel_granularity_ns >= UINT32_MAX/2) {
+      t->timewheel_len = (UINT32_MAX/2)/t->timewheel_granularity_ns;
+    }
+
+    if ((t->timewheel = calloc(1, sizeof(struct queue*) * t->timewheel_len))
+      == NULL)
+    {
+      TAS_LOG(ERR, FAST_QMAN, "%s(): timewheel malloc failed\n", __func__);
+      return -1;
+    }
+
+    struct list_node* bucket_heads = calloc(1, sizeof(struct list_node) * t->timewheel_len);
+    if (bucket_heads == NULL)
+    {
+      TAS_LOG(ERR, FAST_QMAN, "%s(): timewheel malloc failed\n", __func__);
+      return -1;
+    }
+
+    for (unsigned i = 0; i < t->timewheel_len; i++)
+    {
+      t->timewheel[i] = LIST_TO_QUEUE(&bucket_heads[i]);
+      QUEUE_TO_LIST(t->timewheel[i])->next = QUEUE_TO_LIST(t->timewheel[i]);
+      QUEUE_TO_LIST(t->timewheel[i])->prev = QUEUE_TO_LIST(t->timewheel[i]);
+    }
+  }
+
   t->nolimit_head_idx = t->nolimit_tail_idx = IDXLIST_INVAL;
-  utils_rng_init(&t->rng, RNG_SEED * ctx->id + ctx->id);
 
   t->ts_virtual = 0;
   t->ts_real = timestamp();
@@ -136,6 +213,7 @@ uint32_t qman_timestamp(uint64_t cycles)
 
 uint32_t qman_next_ts(struct qman_thread *t, uint32_t cur_ts)
 {
+  uint32_t idx;
   uint32_t ts = timestamp();
   uint32_t ret_ts = t->ts_virtual + (ts - t->ts_real);
 
@@ -145,17 +223,26 @@ uint32_t qman_next_ts(struct qman_thread *t, uint32_t cur_ts)
     return 0;
   }
 
-  uint32_t idx = t->head_idx[0];
-  if(idx != IDXLIST_INVAL) {
-    struct queue *q = &t->queues[idx];
+  switch (config.scheduler)
+  {
+  case CONFIG_PS_CAROUSEL:
+    return 0;
+  case CONFIG_PS_FQ:
+    idx = t->head_idx[0];
+    if(idx != IDXLIST_INVAL) {
+      struct queue *q = &t->queues[idx];
 
-    if(timestamp_lessthaneq(t, q->next_ts, ret_ts)) {
-      // Fired in the past - immediate timeout
-      return 0;
-    } else {
-      // Timeout in the future - return difference
-      return rel_time(ret_ts, q->next_ts) / 1000;
+      if(timestamp_lessthaneq(t, q->next_ts, ret_ts)) {
+        // Fired in the past - immediate timeout
+        return 0;
+      } else {
+        // Timeout in the future - return difference
+        return rel_time(ret_ts, q->next_ts) / 1000;
+      }
     }
+    break;
+  default:
+    break;
   }
 
   // List empty - no timeout
@@ -165,19 +252,48 @@ uint32_t qman_next_ts(struct qman_thread *t, uint32_t cur_ts)
 int qman_poll(struct qman_thread *t, unsigned num, unsigned *q_ids,
     uint16_t *q_bytes)
 {
+  STATS_TS(qman_poll_start);
   unsigned x, y;
   uint32_t ts = timestamp();
+  static unsigned first_poll_done = 0;
 
   /* poll nolimit list and skiplist alternating the order between */
   if (t->nolimit_first) {
     x = poll_nolimit(t, ts, num, q_ids, q_bytes);
-    y = poll_skiplist(t, ts, num - x, q_ids + x, q_bytes + x);
+    switch(config.scheduler)
+    {
+      case CONFIG_PS_CAROUSEL:
+        y = poll_timewheel(t, ts, num - x, q_ids + x, q_bytes + x);
+        break;
+      case CONFIG_PS_FQ:
+        y = poll_skiplist(t, ts, num - x, q_ids + x, q_bytes + x);
+        break;
+      default:
+        abort();
+    }
   } else {
-    x = poll_skiplist(t, ts, num, q_ids, q_bytes);
+    switch(config.scheduler)
+    {
+      case CONFIG_PS_CAROUSEL:
+        x = poll_timewheel(t, ts, num, q_ids, q_bytes);
+        break;
+      case CONFIG_PS_FQ:
+        x = poll_skiplist(t, ts, num, q_ids, q_bytes);
+        break;
+      default:
+        abort();
+    }
     y = poll_nolimit(t, ts, num - x, q_ids + x, q_bytes + x);
   }
   t->nolimit_first = !t->nolimit_first;
 
+  if (UNLIKELY(first_poll_done==0 && (x+y> 0))) {
+    first_poll_done = 1;
+  }
+  if (LIKELY(first_poll_done)) {
+    STATS_TS(qman_poll_end);
+    STATS_ADD(t, cyc_qman_poll, qman_poll_end - qman_poll_start);
+  }
   return x + y;
 }
 
@@ -196,7 +312,7 @@ int qman_set(struct qman_thread *t, uint32_t id, uint32_t rate, uint32_t avail,
       id, rate, avail, max_chunk, qidx, tid);
 
   if (id >= FLEXNIC_NUM_QMQUEUES) {
-    fprintf(stderr, "qman_set: invalid queue id: %u >= %u\n", id,
+    fprintf(stderr, "qman_set: invalid queue id: %u >= %llu\n", id,
         FLEXNIC_NUM_QMQUEUES);
     return -1;
   }
@@ -295,7 +411,32 @@ static inline unsigned poll_nolimit(struct qman_thread *t, uint32_t cur_ts,
 static inline uint32_t queue_new_ts(struct qman_thread *t, struct queue *q,
     uint32_t bytes)
 {
-  return t->ts_virtual + ((uint64_t) bytes * 8 * 1000000) / q->rate;
+  uint64_t delta = ((uint64_t) bytes * 8 * 1000000) / q->rate;
+
+  if (delta >= UINT32_MAX/2) {
+    delta = UINT32_MAX/2 - 1;
+    STATS_ADD(t, queue_new_ts_wrap_cnt, 1);
+  }
+  return t->ts_virtual + delta;
+}
+
+static inline uint32_t queue_new_ts_timewheel(struct qman_thread *t, struct queue *q,
+    uint32_t bytes)
+{
+  static uint64_t timewheel_max_time = 0;
+  if (UNLIKELY(timewheel_max_time == 0))
+  {
+    timewheel_max_time = ((t->timewheel_len - 1) * t->timewheel_granularity_ns);
+  }
+
+  uint64_t delta = ((uint64_t) bytes * 8 * 1000000) / q->rate;
+
+  if (delta > timewheel_max_time) {
+    STATS_ADD(t, timewheel_delta_high, 1);
+    delta = timewheel_max_time;
+  }
+
+  return t->ts_virtual + delta;
 }
 
 /** Add queue to the skip list list */
@@ -386,8 +527,8 @@ static inline unsigned poll_skiplist(struct qman_thread *t, uint32_t cur_ts,
     q = &t->queues[idx];
 
     /* beyond max_vts */
-    dprintf("poll_skiplist: next_ts=%u vts=%u rts=%u max_vts=%u cur_ts=%u\n",
-        q->next_ts, t->ts_virtual, t->ts_real, max_vts, cur_ts);
+    //fprintf(stderr, "poll_skiplist: next_ts=%u vts=%u rts=%u max_vts=%u cur_ts=%u rate=%u\n",
+    //    q->next_ts, t->ts_virtual, t->ts_real, max_vts, cur_ts, q->rate);
     if (!timestamp_lessthaneq(t, q->next_ts, max_vts)) {
       t->ts_virtual = max_vts;
       break;
@@ -402,8 +543,7 @@ static inline unsigned poll_skiplist(struct qman_thread *t, uint32_t cur_ts,
 
     /* advance virtual timestamp */
     t->ts_virtual = q->next_ts;
-
-    dprintf("poll_skiplist: t=%p q=%p idx=%u avail=%u rate=%u flags=%x\n", t, q, idx, q->avail, q->rate, q->flags);
+    //TAS_LOG(ERR, FAST_QMAN, "poll_skiplist: t=%p q=%p idx=%u avail=%u rate=%u flags=%x\n", t, q, idx, q->avail, q->rate, q->flags);
 
     if (q->avail > 0) {
       queue_fire(t, q, idx, q_ids + cnt, q_bytes + cnt);
@@ -435,6 +575,142 @@ static inline uint8_t queue_level(struct qman_thread *t)
 }
 
 /*****************************************************************************/
+/* Managing timewheel queues */
+
+static inline void queue_activate_timewheel(struct qman_thread *t,
+    struct queue *q, uint32_t q_idx)
+{
+  uint32_t ts, max_ts;
+  assert((q->flags & (FLAG_INTIMEWHEEL | FLAG_INNOLIMITL)) == 0);
+
+  static uint64_t timewheel_max_time = 0;
+  if (UNLIKELY(timewheel_max_time == 0))
+  {
+    timewheel_max_time = ((t->timewheel_len - 1) * t->timewheel_granularity_ns);
+  }
+
+  dprintf("queue_activate_timewheel: t=%p q=%p idx=%u avail=%u rate=%u \
+            flags=%x ts_virt=%u next_ts=%u\n",
+            t, q, q_idx, q->avail, q->rate, q->flags,
+            t->ts_virtual, q->next_ts);
+
+  /* make sure queue has a reasonable next_ts:
+   *  - not in the past
+   *  - not more than if it just sent max_chunk at the current rate
+   */
+  ts = q->next_ts;
+  //uint32_t fired_ts = ts;
+  max_ts = queue_new_ts_timewheel(t, q, q->max_chunk);
+
+  if (timestamp_lessthaneq(t, ts, t->ts_virtual)) {
+    ts = q->next_ts = t->ts_virtual;
+  } else if (!timestamp_lessthaneq(t, ts, max_ts)) {
+    ts = q->next_ts = max_ts;
+  }
+
+  int64_t diff = rel_time(t->ts_virtual, q->next_ts);
+
+  //assert(diff >= 0);
+  //assert(diff <= timewheel_max_time);
+
+  uint64_t pos = diff / (t->timewheel_granularity_ns);
+
+  if (pos==0)
+    pos++;
+
+  STATS_ADD(t, act_timewheel_cnt, 1);
+  pos = (t->timewheel_head_idx + pos);
+  if (pos >= t->timewheel_len)
+    pos -= t->timewheel_len;
+
+  //assert(pos < t->timewheel_len);
+
+  //TAS_LOG(ERR, FAST_QMAN, "queue_activate_timewheel: q=%p fired_ts=%u head_idx=%u pos=%u ts_virtual=%u next_ts=%u rel_time=%u\n", q, fired_ts, t->timewheel_head_idx, pos, t->ts_virtual, q->next_ts, rel_time(t->ts_virtual, q->next_ts));
+  list_add_tail(QUEUE_TO_LIST(t->timewheel[pos]), QUEUE_TO_LIST(q));
+
+  t->timewheel_count++;
+  q->flags |= FLAG_INTIMEWHEEL;
+}
+
+static inline unsigned poll_timewheel(struct qman_thread *t, uint32_t cur_ts,
+    unsigned num, unsigned *q_ids, uint16_t *q_bytes)
+{
+  unsigned cnt;
+  uint32_t idx, max_vts, cur_vts;
+  struct queue *q;
+
+  /* maximum virtual time stamp that can be reached */
+  uint32_t time_to_cover = rel_time(t->ts_real, cur_ts);
+  //assert(time_to_cover > 0);
+  max_vts = t->ts_virtual + time_to_cover;
+  //max_vts = cur_ts;
+
+  cur_vts = t->ts_virtual;
+
+  if (rel_time(cur_vts, max_vts) < rel_time(cur_vts, cur_ts))
+    max_vts = cur_ts;
+
+  idx = t->timewheel_head_idx;
+  //if (!timestamp_lessthaneq(t, cur_vts, max_vts))
+  //{
+  //  TAS_LOG(ERR, FAST_QMAN, "cur_vts=%u cur_ts=%u. cur_ts is claimed to be lesser.\n", cur_vts, cur_ts);
+  //}
+
+  for (cnt = 0; cnt < num;) {
+    if (!timestamp_lessthaneq(t, cur_vts, max_vts))
+    {
+      break;
+    }
+
+    struct list_node* bucket = QUEUE_TO_LIST(t->timewheel[t->timewheel_head_idx]);
+    while (bucket->next != bucket)
+    {
+      q = LIST_TO_QUEUE(bucket->next);
+
+ //     assert((q->flags & FLAG_INTIMEWHEEL) != 0);
+ //     assert(q->avail > 0);
+      q->flags &= ~FLAG_INTIMEWHEEL;
+
+      uint32_t q_idx = q - t->queues;
+      //fprintf(stderr, "Size of queues %ld, Diff %lu\n", sizeof(*t->queues), q - t->queues);
+      dprintf("poll_timehweel: t=%p q=%p time_wheel_head_idx=%u avail=%u rate=%u flags=%x q_idx=%u\n",
+        t, q, idx, q->avail, q->rate, q->flags);
+
+      //TAS_LOG(ERR, FAST_QMAN, "poll_timehweel: q=%p q_idx=%u cnt=%u head_idx=%u q_avail=%u max_chunk=%u curr_ts=%u ts_virtual=%u rate=%u\n", q, q_idx, cnt, idx,
+      //  q->avail, q->max_chunk, cur_ts, t->ts_virtual, q->rate);
+      list_remove(bucket->next);
+      t->timewheel_count--;
+
+      //TAS_LOG(ERR, MAIN, "poll_timewheel: will fire queue with cnt=%u, q_idx=%u\n", cnt, q_idx);
+      queue_fire(t, q, q_idx, q_ids + cnt, q_bytes + cnt);
+      cnt++;
+
+      if (cnt == num)
+      {
+        //TAS_LOG(ERR, FAST_QMAN, "Breaking as limit is reached cur_vts=%u cur_ts=%u\n", cur_vts, cur_ts);
+        break;
+      }
+    }
+
+    t->ts_virtual = cur_vts;
+    t->timewheel_head_idx = idx;
+
+    if (cnt == num)
+    {
+      break;
+    }
+
+    cur_vts += t->timewheel_granularity_ns;
+    idx++;
+    if (idx >= t->timewheel_len)
+      idx -= t->timewheel_len;
+  }
+
+  t->ts_real = cur_ts;
+  return cnt;
+}
+//
+/*****************************************************************************/
 
 static inline void queue_fire(struct qman_thread *t,
     struct queue *q, uint32_t idx, unsigned *q_id, uint16_t *q_bytes)
@@ -446,10 +722,16 @@ static inline void queue_fire(struct qman_thread *t,
   bytes = (q->avail <= q->max_chunk ? q->avail : q->max_chunk);
   q->avail -= bytes;
 
-  dprintf("queue_fire: t=%p q=%p idx=%u gidx=%u bytes=%u avail=%u rate=%u\n", t, q, idx, idx, bytes, q->avail, q->rate);
   if (q->rate > 0) {
-    q->next_ts = queue_new_ts(t, q, bytes);
+    if (config.scheduler == CONFIG_PS_CAROUSEL) {
+      q->next_ts = queue_new_ts_timewheel(t, q, bytes);
+    }
+    else {
+      q->next_ts = queue_new_ts(t, q, bytes);
+    }
   }
+
+  //TAS_LOG(ERR, FAST_QMAN, "queue_fire: q=%p q_idx=%u rate=%u virtual_ts=%u next_ts=%u avail=%u\n", q, idx, q->rate, t->ts_virtual, q->next_ts, q->avail);
 
   if (q->avail > 0) {
     queue_activate(t, q, idx);
@@ -469,11 +751,17 @@ static inline void queue_fire(struct qman_thread *t,
 static inline void queue_activate(struct qman_thread *t, struct queue *q,
     uint32_t idx)
 {
+  STATS_TS(start);
   if (q->rate == 0) {
     queue_activate_nolimit(t, q, idx);
   } else {
-    queue_activate_skiplist(t, q, idx);
+    if (config.scheduler == CONFIG_PS_CAROUSEL)
+      queue_activate_timewheel(t, q, idx);
+    else
+      queue_activate_skiplist(t, q, idx);
   }
+  STATS_TS(end);
+  STATS_ADD(t, cyc_queue_activate, end - start);
 }
 
 static inline uint32_t timestamp(void)
@@ -482,9 +770,12 @@ static inline uint32_t timestamp(void)
   uint64_t cycles = rte_get_tsc_cycles();
 
   if (freq == 0)
+  {
     freq = rte_get_tsc_hz();
+    freq /= 1000000000ULL;
+    assert(freq != 0);  /*> Atleast 1GHz processor required */
+  }
 
-  cycles *= 1000000000ULL;
   cycles /= freq;
   return cycles;
 }

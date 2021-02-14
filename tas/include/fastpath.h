@@ -54,6 +54,11 @@ struct qman_thread {
 
   /************************************/
   /* modified by owner thread */
+  struct queue** timewheel;
+  uint32_t timewheel_granularity_ns;
+  uint32_t timewheel_head_idx;
+  uint32_t timewheel_len;
+  uint32_t timewheel_count;   /*> Number of flows currently in the timewheel */
   uint32_t head_idx[QMAN_SKIPLIST_LEVELS];
   uint32_t nolimit_head_idx;
   uint32_t nolimit_tail_idx;
@@ -61,6 +66,7 @@ struct qman_thread {
   uint32_t ts_virtual;
   struct utils_rng rng;
   bool nolimit_first;
+  struct timewheel_stats stats;
 };
 
 
